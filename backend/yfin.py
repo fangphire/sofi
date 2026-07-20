@@ -339,10 +339,12 @@ def upsert_price_history(records):
     conn.commit()
     conn.close()
 
+import time
+
 def seed_all_stocks():
     """
-    Run this once to populate the database with all 20 stocks
-    Called on startup from main.py
+    Run this once to populate the database with all 20 stocks.
+    Delay added between requests to avoid Yahoo Finance rate limiting.
     """
     print(f"Seeding {len(TICKERS)} stocks...")
     success = 0
@@ -358,19 +360,17 @@ def seed_all_stocks():
             print(f"  ✓ {ticker} — {data['company_name']}")
         else:
             failed.append(ticker)
+        time.sleep(2)  # 2 second pause between each ticker
 
     print(f"\nSeeding complete: {success}/{len(TICKERS)} stocks loaded")
     if failed:
         print(f"Failed: {failed}")
 
 def refresh_prices():
-    """
-    Lightweight refresh — updates current price data only
-    Called on a schedule to keep prices current
-    """
     print("Refreshing prices...")
     for ticker in TICKERS:
         data = fetch_stock_data(ticker)
         if data:
             upsert_stock(data)
+        time.sleep(2)
     print("Price refresh complete")

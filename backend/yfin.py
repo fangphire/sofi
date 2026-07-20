@@ -70,23 +70,47 @@ def fetch_yahoo_summary(ticker_symbol):
         "corsDomain": "finance.yahoo.com",
         "formatted": "false",
     }
+
     try:
         r = SESSION.get(url, params=params, timeout=15)
+
+        print("\n" + "=" * 80)
+        print(f"SUMMARY REQUEST FOR: {ticker_symbol}")
+        print("Status:", r.status_code)
+        print("Content-Type:", r.headers.get("Content-Type"))
+        print("Response (first 1000 chars):")
+        print(r.text[:1000])
+        print("=" * 80)
+
         if r.status_code == 429:
-            print(f"  Rate limited on summary for {ticker_symbol}, waiting 15s...")
+            print(f"Rate limited on {ticker_symbol}, retrying...")
             time.sleep(15)
             r = SESSION.get(url, params=params, timeout=15)
+
         if r.status_code != 200:
+            print("Non-200 response")
             return {}
-        result = r.json().get("quoteSummary", {}).get("result", [{}])
-        if not result:
+
+        data = r.json()
+
+        print("Parsed JSON:")
+        print(data)
+
+        result = data.get("quoteSummary", {}).get("result")
+
+        if result is None:
+            print("Yahoo returned result=None")
+            print("Error:", data.get("quoteSummary", {}).get("error"))
             return {}
+
         combined = {}
         for module in result:
             combined.update(module)
+
         return combined
+
     except Exception as e:
-        print(f"  Summary API error for {ticker_symbol}: {e}")
+        print(f"Summary API exception: {e}")
         return {}
 
 def calculate_cagr(start_value, end_value, years):

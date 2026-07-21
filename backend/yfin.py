@@ -176,52 +176,70 @@ def fetch_screener_data(symbol):
     import requests
     from bs4 import BeautifulSoup
 
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36"
+        )
+    }
+
+    # Try consolidated page first, then standalone
     for url in [
         f"https://www.screener.in/company/{symbol}/consolidated/",
-        f"https://www.screener.in/company/{symbol}/"
+        f"https://www.screener.in/company/{symbol}/",
     ]:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    try:
-       r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200 and "top-ratios" in r.text:
-            break
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+
+            if r.status_code == 200 and "top-ratios" in r.text:
+                break
+
+        except Exception:
+            continue
     else:
         print(f"  Screener: no page found for {symbol}")
         return {}
-        
-        soup = BeautifulSoup(r.text, "html.parser")
-        ratios = {}
-        top = soup.find("ul", id="top-ratios")
-        if top:
-            for li in top.find_all("li"):
-                name_tag  = li.find("span", class_="name")
-                value_tag = li.find("span", class_="value")
-                if name_tag and value_tag:
-                    key = name_tag.get_text(strip=True)
-                    val = value_tag.get_text(strip=True).replace(",", "").replace("%", "").replace("₹", "").strip()
-                    ratios[key] = val
 
-        def to_float(val):
-            try:
-                return float(val) if val not in (None, "", "—", "-") else None
-            except:
+    soup = BeautifulSoup(r.text, "html.parser")
+    ratios = {}
+
+    top = soup.find("ul", id="top-ratios")
+    if top:
+        for li in top.find_all("li"):
+            name_tag = li.find("span", class_="name")
+            value_tag = li.find("span", class_="value")
+
+            if name_tag and value_tag:
+                key = name_tag.get_text(strip=True)
+                val = (
+                    value_tag.get_text(strip=True)
+                    .replace(",", "")
+                    .replace("%", "")
+                    .replace("₹", "")
+                    .strip()
+                )
+                ratios[key] = val
+
+    def to_float(val):
+        try:
+            if val in (None, "", "—", "-"):
                 return None
+            return float(val)
+        except Exception:
+            return None
 
-        return {
-            "roe":                  to_float(ratios.get("ROE")),
-            "roce":                 to_float(ratios.get("ROCE")),
-            "pe_ratio":             to_float(ratios.get("Stock P/E")),
-            "dividend_yield":       to_float(ratios.get("Dividend Yield")),
-            "book_value_per_share": to_float(ratios.get("Book Value")),
-            "opm":                  None,
-            "debt_to_equity":       None,
-            "ev_ebitda":            None,
-            "sales_growth":         None,
-            "profit_growth":        None,
-        }
-
+    return {
+        "roe": to_float(ratios.get("ROE")),
+        "roce": to_float(ratios.get("ROCE")),
+        "pe_ratio": to_float(ratios.get("Stock P/E")),
+        "dividend_yield": to_float(ratios.get("Dividend Yield")),
+        "book_value_per_share": to_float(ratios.get("Book Value")),
+        "opm": None,
+        "debt_to_equity": None,
+        "ev_ebitda": None,
+        "sales_growth": None,
+        "profit_growth": None,
+    }
     except Exception as e:
         print(f"  Screener error for {symbol}: {e}")
         return {}

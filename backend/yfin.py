@@ -4,7 +4,22 @@ from pathlib import Path
 from nse import NSE
 from backend.database import get_connection
 
-TICKERS = ["TCS"]
+TICKERS = [
+    # Large cap — IT
+    "TCS", "INFY", "HCLTECH", "WIPRO",
+    # Large cap — Banking & Finance
+    "HDFCBANK", "ICICIBANK", "KOTAKBANK", "BAJFINANCE",
+    # Large cap — Consumer
+    "HINDUNILVR", "NESTLEIND", "TITAN", "ASIANPAINT",
+    # Mid cap — Capital Goods & Infra
+    "LT", "CUMMINSIND",
+    # Mid cap — Pharma
+    "SUNPHARMA", "DIVISLAB",
+    # Mid cap — Auto
+    "MARUTI", "BAJAJFINSV",
+    # Mid cap — Chemicals & Energy
+    "PIDILITIND", "RELIANCE"
+]
 
 COOKIE_DIR = Path("/tmp/nse_cookies")
 COOKIE_DIR.mkdir(exist_ok=True)

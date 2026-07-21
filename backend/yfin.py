@@ -82,6 +82,11 @@ def fetch_stock_data(symbol):
             "beta":                    None,
             "last_updated":            datetime.now().isoformat()
         }
+        # enrich with screener.in fundamentals
+        time.sleep(1)
+        screener = fetch_screener_data(symbol)
+        data.update({k: v for k, v in screener.items() if v is not None})
+
         return data
 
     except Exception as e:
@@ -119,6 +124,68 @@ def fetch_price_history(symbol, days=365):
     except Exception as e:
         print(f"  Price history error for {symbol}: {e}")
         return []
+
+def fetch_screener_data(symbol):
+    """
+    Scrapes key fundamentals from screener.in public company page.
+    NSE doesn't provide ROE, ROCE, OPM, NPM, D/E — screener does.
+    """
+    import requests
+    from bs4 import BeautifulSoup
+
+    url = f"https://www.screener.in/company/{symbol}/consolidated/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            print(f"  Screener returned {r.status_code} for {symbol}")
+            return {}
+
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        # screener stores key ratios in a ul with id="top-ratios"
+        ratios = {}
+        top = soup.find("ul", id="top-ratios")
+        if top:
+            for li in top.find_all("li"):
+                name_tag  = li.find("span", class_="name")
+                value_tag = li.find("span", class_="value")
+                if name_tag and value_tag:
+                    key = name_tag.get_text(strip=True)
+                    val = value_tag.get_text(strip=True).replace(",", "").replace("%", "").replace("₹", "").strip()
+                    ratios[key] = val
+
+        def to_float(val):
+            try:
+                return float(val) if val not in (None, "", "—", "-") else None
+            except:
+                return None
+
+        result = {
+            "roe":              to_float(ratios.get("Return on equity")),
+            "roce":             to_float(ratios.get("ROCE")),
+            "opm":              to_float(ratios.get("OPM")),
+            "debt_to_equity":   to_float(ratios.get("Debt to equity")),
+            "ev_ebitda":        to_float(ratios.get("EV / EBITDA")),
+        }
+
+        # sales and profit growth from 3yr CAGR in the ratios section
+        # screener labels these differently — get what we can
+        result["sales_growth"]  = to_float(ratios.get("Sales growth"))
+        result["profit_growth"] = to_float(ratios.get("Profit growth"))
+
+        print(f"  Screener data for {symbol}: {result}")
+        return result
+
+    except Exception as e:
+        print(f"  Screener error for {symbol}: {e}")
+        return {}
+
+
+
 
 def upsert_stock(data):
     conn = get_connection()

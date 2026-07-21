@@ -163,7 +163,7 @@ def fetch_screener_data(symbol):
                 return float(val) if val not in (None, "", "—", "-") else None
             except:
                 return None
-
+        print(f"  RAW RATIOS: {ratios}")
         result = {
             "roe":              to_float(ratios.get("Return on equity")),
             "roce":             to_float(ratios.get("ROCE")),

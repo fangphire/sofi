@@ -240,9 +240,7 @@ def fetch_screener_data(symbol):
         "sales_growth": None,
         "profit_growth": None,
     }
-    except Exception as e:
-        print(f"  Screener error for {symbol}: {e}")
-        return {}
+
 
 def upsert_stock(data):
     conn = get_connection()

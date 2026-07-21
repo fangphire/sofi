@@ -137,7 +137,6 @@ def fetch_screener_data(symbol):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
-
     try:
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code != 200:
@@ -145,8 +144,6 @@ def fetch_screener_data(symbol):
             return {}
 
         soup = BeautifulSoup(r.text, "html.parser")
-
-        # screener stores key ratios in a ul with id="top-ratios"
         ratios = {}
         top = soup.find("ul", id="top-ratios")
         if top:
@@ -163,29 +160,23 @@ def fetch_screener_data(symbol):
                 return float(val) if val not in (None, "", "—", "-") else None
             except:
                 return None
-        print(f"  RAW RATIOS: {ratios}")
-        result = {
-            "roe":              to_float(ratios.get("Return on equity")),
-            "roce":             to_float(ratios.get("ROCE")),
-            "opm":              to_float(ratios.get("OPM")),
-            "debt_to_equity":   to_float(ratios.get("Debt to equity")),
-            "ev_ebitda":        to_float(ratios.get("EV / EBITDA")),
+
+        return {
+            "roe":                  to_float(ratios.get("ROE")),
+            "roce":                 to_float(ratios.get("ROCE")),
+            "pe_ratio":             to_float(ratios.get("Stock P/E")),
+            "dividend_yield":       to_float(ratios.get("Dividend Yield")),
+            "book_value_per_share": to_float(ratios.get("Book Value")),
+            "opm":                  None,
+            "debt_to_equity":       None,
+            "ev_ebitda":            None,
+            "sales_growth":         None,
+            "profit_growth":        None,
         }
-
-        # sales and profit growth from 3yr CAGR in the ratios section
-        # screener labels these differently — get what we can
-        result["sales_growth"]  = to_float(ratios.get("Sales growth"))
-        result["profit_growth"] = to_float(ratios.get("Profit growth"))
-
-        print(f"  Screener data for {symbol}: {result}")
-        return result
 
     except Exception as e:
         print(f"  Screener error for {symbol}: {e}")
         return {}
-
-
-
 
 def upsert_stock(data):
     conn = get_connection()

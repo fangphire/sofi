@@ -109,31 +109,59 @@ def fetch_stock_data(symbol):
         return None
 
 def fetch_price_history(symbol, days=365):
+    """
+    Uses NSE's equity history endpoint directly via requests
+    NseIndiaApi's fetch_equity_historical_data is unreliable
+    """
+    import requests
+    from datetime import date, timedelta
+
+    end   = date.today()
+    start = end - timedelta(days=days)
+
+    url = "https://www.nseindia.com/api/historical/cm/equity"
+    params = {
+        "symbol": symbol,
+        "series": '["EQ"]',
+        "from":   start.strftime("%d-%m-%Y"),
+        "to":     end.strftime("%d-%m-%Y"),
+    }
+    headers = {
+        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept":          "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer":         "https://www.nseindia.com/",
+    }
+
     try:
-        end   = date.today()
-        start = end - timedelta(days=days)
+        # NSE requires a session cookie — get it first
+        session = requests.Session()
+        session.headers.update(headers)
+        session.get("https://www.nseindia.com", timeout=10)
+        time.sleep(1)
 
-        with NSE(download_folder=COOKIE_DIR, server=True) as nse:
-            hist = nse.fetch_equity_historical_data(
-                symbol=symbol,
-                from_date=start,
-                to_date=end
-            )
-
-        if not hist:
+        r = session.get(url, params=params, timeout=15)
+        if r.status_code != 200:
+            print(f"  History API returned {r.status_code} for {symbol}")
             return []
 
+        data = r.json().get("data", [])
         records = []
-        for row in hist:
-            records.append({
-                "ticker":      f"{symbol}.NS",
-                "date":        row.get("mTIMESTAMP", "")[:10],
-                "open_price":  row.get("mOpen"),
-                "high_price":  row.get("mHigh"),
-                "low_price":   row.get("mLow"),
-                "close_price": row.get("mClose"),
-                "volume":      row.get("mVolume", 0)
-            })
+        for row in data:
+            try:
+                records.append({
+                    "ticker":      f"{symbol}.NS",
+                    "date":        row["CH_TIMESTAMP"][:10],
+                    "open_price":  float(row["CH_OPENING_PRICE"]),
+                    "high_price":  float(row["CH_TRADE_HIGH_PRICE"]),
+                    "low_price":   float(row["CH_TRADE_LOW_PRICE"]),
+                    "close_price": float(row["CH_CLOSING_PRICE"]),
+                    "volume":      int(row["CH_TOT_TRADED_QTY"])
+                })
+            except:
+                continue
+
+        print(f"  Got {len(records)} days of history for {symbol}")
         return records
 
     except Exception as e:
@@ -148,16 +176,21 @@ def fetch_screener_data(symbol):
     import requests
     from bs4 import BeautifulSoup
 
-    url = f"https://www.screener.in/company/{symbol}/consolidated/"
+    for url in [
+        f"https://www.screener.in/company/{symbol}/consolidated/",
+        f"https://www.screener.in/company/{symbol}/"
+    ]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     try:
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code != 200:
-            print(f"  Screener returned {r.status_code} for {symbol}")
-            return {}
-
+       r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200 and "top-ratios" in r.text:
+            break
+    else:
+        print(f"  Screener: no page found for {symbol}")
+        return {}
+        
         soup = BeautifulSoup(r.text, "html.parser")
         ratios = {}
         top = soup.find("ul", id="top-ratios")

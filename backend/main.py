@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 from datetime import datetime
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from backend.database import get_connection, init_db
 from backend.yfin import seed_all_stocks, refresh_prices, fetch_stock_data, upsert_stock, fetch_price_history, upsert_price_history, TICKERS
@@ -12,6 +14,12 @@ app = FastAPI(
     description="Stock market monitoring platform for Indian equities",
     version="1.0.0"
 )
+
+app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+@app.get("/dashboard")
+def dashboard():
+    return FileResponse("frontend/index.html")
 
 # allow frontend to call backend from a different domain
 app.add_middleware(

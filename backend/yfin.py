@@ -110,41 +110,75 @@ def fetch_stock_data(symbol):
 
 def fetch_price_history(symbol, days=365):
     """
-    Uses yf.download() for price history — this endpoint works on
-    server IPs unlike yf.Ticker().info which gets 429 blocked.
-    NSE's historical API also blocks Render's IP.
+    Fetch daily OHLCV history directly from NSE.
+
+    The dashboard only needs daily candles, so these are stored locally after
+    the initial fetch instead of requesting NSE whenever someone opens a chart.
     """
-    import yfinance as yf
-
     try:
-        ticker_symbol = f"{symbol}.NS"
-        hist = yf.download(
-            ticker_symbol,
-            period="1y",
-            auto_adjust=True,
-            progress=False,
-            multi_level_index=False
-        )
+        end_date = date.today()
+        start_date = end_date - timedelta(days=days)
 
-        if hist.empty:
+        with NSE(download_folder=COOKIE_DIR, server=True) as nse:
+            history_rows = nse.fetch_equity_historical_data(
+                symbol,
+                from_date=start_date,
+                to_date=end_date,
+                series="EQ"
+            )
+
+        if not history_rows:
             print(f"  No history returned for {symbol}")
             return []
 
+        def read_value(row, *keys):
+            """Return the first populated field from NSE's versioned responses."""
+            for key in keys:
+                value = row.get(key)
+                if value not in (None, ""):
+                    return value
+            raise KeyError(" / ".join(keys))
+
+        def parse_trade_date(value):
+            value = str(value)
+            # Current NSE responses use mTIMESTAMP (e.g. 01-Apr-2025); some
+            # versions expose CH_TIMESTAMP (e.g. 2025-04-01) instead.
+            # ISO dates may be followed by a time; NSE's display date is 11 chars.
+            date_portion = value[:10] if len(value) > 4 and value[4] == "-" else value[:11]
+            for date_format in ("%Y-%m-%d", "%d-%b-%Y", "%d-%m-%Y"):
+                try:
+                    return datetime.strptime(date_portion, date_format).date()
+                except ValueError:
+                    continue
+            raise ValueError(f"Unrecognised NSE trade date: {value}")
+
         records = []
-        for date_idx, row in hist.iterrows():
+        skipped_rows = 0
+        for row in history_rows:
             try:
-                records.append({
-                    "ticker":      f"{symbol}.NS",
-                    "date":        date_idx.strftime("%Y-%m-%d"),
-                    "open_price":  round(float(row["Open"]), 2),
-                    "high_price":  round(float(row["High"]), 2),
-                    "low_price":   round(float(row["Low"]), 2),
-                    "close_price": round(float(row["Close"]), 2),
-                    "volume":      int(row["Volume"])
-                })
-            except:
+                  trade_date = parse_trade_date(read_value(
+                      row, "mtimestamp", "mTIMESTAMP", "CH_TIMESTAMP", "TIMESTAMP", "date"
+                  ))
+                  records.append({
+                      "ticker":      f"{symbol}.NS",
+                      "date":        trade_date.isoformat(),
+                      "open_price":  round(float(read_value(row, "chOpeningPrice", "CH_OPENING_PRICE", "open")), 2),
+                      "high_price":  round(float(read_value(row, "chTradeHighPrice", "CH_TRADE_HIGH_PRICE", "high")), 2),
+                      "low_price":   round(float(read_value(row, "chTradeLowPrice", "CH_TRADE_LOW_PRICE", "low")), 2),
+                      "close_price": round(float(read_value(row, "chClosingPrice", "CH_CLOSING_PRICE", "close")), 2),
+                      "volume":      int(float(read_value(row, "chTotTradedQty", "CH_TOT_TRADED_QTY", "volume")))
+                  })    
+            except (KeyError, TypeError, ValueError) as row_error:
+                skipped_rows += 1
+                if skipped_rows == 1:
+                    print(
+                        f"  Skipping malformed history rows for {symbol}: {row_error}. "
+                        f"Available fields: {', '.join(row.keys())}"
+                    )
                 continue
 
+        if skipped_rows:
+            print(f"  Skipped {skipped_rows} malformed history rows for {symbol}")
         print(f"  Got {len(records)} days of history for {symbol}")
         return records
 

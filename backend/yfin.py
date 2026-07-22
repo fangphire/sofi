@@ -110,53 +110,37 @@ def fetch_stock_data(symbol):
 
 def fetch_price_history(symbol, days=365):
     """
-    Uses NSE's equity history endpoint directly via requests
-    NseIndiaApi's fetch_equity_historical_data is unreliable
+    Uses yf.download() for price history — this endpoint works on
+    server IPs unlike yf.Ticker().info which gets 429 blocked.
+    NSE's historical API also blocks Render's IP.
     """
-    import requests
-    from datetime import date, timedelta
-
-    end   = date.today()
-    start = end - timedelta(days=days)
-
-    url = "https://www.nseindia.com/api/historical/cm/equity"
-    params = {
-        "symbol": symbol,
-        "series": '["EQ"]',
-        "from":   start.strftime("%d-%m-%Y"),
-        "to":     end.strftime("%d-%m-%Y"),
-    }
-    headers = {
-        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept":          "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer":         "https://www.nseindia.com/",
-    }
+    import yfinance as yf
 
     try:
-        # NSE requires a session cookie — get it first
-        session = requests.Session()
-        session.headers.update(headers)
-        session.get("https://www.nseindia.com", timeout=10)
-        time.sleep(1)
+        ticker_symbol = f"{symbol}.NS"
+        hist = yf.download(
+            ticker_symbol,
+            period="1y",
+            auto_adjust=True,
+            progress=False,
+            multi_level_index=False
+        )
 
-        r = session.get(url, params=params, timeout=15)
-        if r.status_code != 200:
-            print(f"  History API returned {r.status_code} for {symbol}")
+        if hist.empty:
+            print(f"  No history returned for {symbol}")
             return []
 
-        data = r.json().get("data", [])
         records = []
-        for row in data:
+        for date_idx, row in hist.iterrows():
             try:
                 records.append({
                     "ticker":      f"{symbol}.NS",
-                    "date":        row["CH_TIMESTAMP"][:10],
-                    "open_price":  float(row["CH_OPENING_PRICE"]),
-                    "high_price":  float(row["CH_TRADE_HIGH_PRICE"]),
-                    "low_price":   float(row["CH_TRADE_LOW_PRICE"]),
-                    "close_price": float(row["CH_CLOSING_PRICE"]),
-                    "volume":      int(row["CH_TOT_TRADED_QTY"])
+                    "date":        date_idx.strftime("%Y-%m-%d"),
+                    "open_price":  round(float(row["Open"]), 2),
+                    "high_price":  round(float(row["High"]), 2),
+                    "low_price":   round(float(row["Low"]), 2),
+                    "close_price": round(float(row["Close"]), 2),
+                    "volume":      int(row["Volume"])
                 })
             except:
                 continue

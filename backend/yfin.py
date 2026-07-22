@@ -1,8 +1,16 @@
 import time
+import time
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from nse import NSE
 from backend.database import get_connection
+
+# lxml is faster but optional — fall back to the stdlib html.parser if missing
+try:
+    import lxml  # noqa: F401
+    _lxml_available = True
+except ImportError:
+    _lxml_available = False
 
 TICKERS = [
     # Large cap — IT
@@ -97,16 +105,114 @@ def fetch_stock_data(symbol):
             "beta":                    None,
             "last_updated":            datetime.now().isoformat()
         }
-        # enrich with screener.in fundamentals
+        # Quarterly results + promoter holding from NSE (free, no rate limit issues)
+        data.update(fetch_nse_fundamentals(symbol))
+
+        # Valuation ratios not published by NSE — scraped from screener.in.
+        # fetch_screener_data never raises; it returns {} on any failure.
+        # We sleep briefly before the request to stay well below screener's
+        # informal throttle (they don't publish a limit, but 1–2 req/sec is safe).
         time.sleep(1)
-        screener = fetch_screener_data(symbol)
-        data.update({k: v for k, v in screener.items() if v is not None})
+        screener_data = fetch_screener_data(symbol)
+        # Only overwrite fields that screener found — don't clobber NSE values
+        for key, value in screener_data.items():
+            if value is not None:
+                data[key] = value
 
         return data
 
     except Exception as e:
         print(f"  Error fetching {symbol}: {e}")
         return None
+
+
+def fetch_nse_fundamentals(symbol):
+    """Fetch free quarterly growth and promoter-holding data from NSE."""
+    try:
+        with NSE(download_folder=COOKIE_DIR, server=True) as nse:
+            comparison = nse.results_comparison(symbol)
+            # NSE documents a three-request-per-second throttle.
+            time.sleep(0.5)
+            shareholding_rows = nse.shareholding(symbol)
+    except Exception as e:
+        print(f"  NSE fundamentals unavailable for {symbol}: {e}")
+        return {}
+
+    def number(value):
+        if value in (None, "", "-", "—"):
+            return None
+        try:
+            return float(str(value).replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+
+    def nse_date(value):
+        if not value:
+            return None
+        value = str(value).split()[0]
+        for date_format in ("%d-%b-%Y", "%Y-%m-%d", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(value, date_format).date()
+            except ValueError:
+                continue
+        return None
+
+    result_rows = comparison.get("resCmpData", []) if isinstance(comparison, dict) else []
+    quarters = []
+    for row in result_rows:
+        report_date = nse_date(row.get("re_to_dt"))
+        if report_date:
+            quarters.append({
+                "date": report_date,
+                "revenue": number(row.get("re_total_inc")),
+                "profit": number(row.get("re_net_profit")),
+            })
+
+    quarters.sort(key=lambda row: row["date"], reverse=True)
+
+    def yoy_growth(metric):
+        if not quarters:
+            return None
+        latest = quarters[0]
+        current = latest[metric]
+        if current is None:
+            return None
+        try:
+            prior_year_date = latest["date"].replace(year=latest["date"].year - 1)
+        except ValueError:  # 29 February
+            prior_year_date = latest["date"].replace(year=latest["date"].year - 1, day=28)
+        candidates = [row for row in quarters if row[metric] is not None]
+        if not candidates:
+            return None
+        prior = min(candidates, key=lambda row: abs((row["date"] - prior_year_date).days))
+        if abs((prior["date"] - prior_year_date).days) > 45 or prior[metric] == 0:
+            return None
+        return round(((current / prior[metric]) - 1) * 100, 2)
+
+    holdings = []
+    for row in shareholding_rows if isinstance(shareholding_rows, list) else []:
+        report_date = nse_date(row.get("date"))
+        holding = number(row.get("pr_and_prgrp"))
+        if report_date and holding is not None:
+            holdings.append((report_date, holding))
+    holdings.sort(reverse=True)
+
+    promoter_holding = holdings[0][1] if holdings else None
+    promoter_change = (
+        round(holdings[0][1] - holdings[1][1], 2)
+        if len(holdings) > 1 else None
+    )
+    revenue_yoy = yoy_growth("revenue")
+    profit_yoy = yoy_growth("profit")
+
+    return {
+        "sales_growth": revenue_yoy,
+        "revenue_growth_yoy": revenue_yoy,
+        "profit_growth": profit_yoy,
+        "earnings_growth_yoy": profit_yoy,
+        "promoter_holding": promoter_holding,
+        "promoter_holding_change": promoter_change,
+    }
 
 def fetch_price_history(symbol, days=365):
     """
@@ -156,18 +262,18 @@ def fetch_price_history(symbol, days=365):
         skipped_rows = 0
         for row in history_rows:
             try:
-                  trade_date = parse_trade_date(read_value(
-                      row, "mtimestamp", "mTIMESTAMP", "CH_TIMESTAMP", "TIMESTAMP", "date"
-                  ))
-                  records.append({
-                      "ticker":      f"{symbol}.NS",
-                      "date":        trade_date.isoformat(),
-                      "open_price":  round(float(read_value(row, "chOpeningPrice", "CH_OPENING_PRICE", "open")), 2),
-                      "high_price":  round(float(read_value(row, "chTradeHighPrice", "CH_TRADE_HIGH_PRICE", "high")), 2),
-                      "low_price":   round(float(read_value(row, "chTradeLowPrice", "CH_TRADE_LOW_PRICE", "low")), 2),
-                      "close_price": round(float(read_value(row, "chClosingPrice", "CH_CLOSING_PRICE", "close")), 2),
-                      "volume":      int(float(read_value(row, "chTotTradedQty", "CH_TOT_TRADED_QTY", "volume")))
-                  })    
+                trade_date = parse_trade_date(read_value(
+                    row, "mtimestamp", "mTIMESTAMP", "CH_TIMESTAMP", "TIMESTAMP", "date"
+                ))
+                records.append({
+                    "ticker":      f"{symbol}.NS",
+                    "date":        trade_date.isoformat(),
+                    "open_price":  round(float(read_value(row, "chOpeningPrice", "CH_OPENING_PRICE", "open")), 2),
+                    "high_price":  round(float(read_value(row, "chTradeHighPrice", "CH_TRADE_HIGH_PRICE", "high")), 2),
+                    "low_price":   round(float(read_value(row, "chTradeLowPrice", "CH_TRADE_LOW_PRICE", "low")), 2),
+                    "close_price": round(float(read_value(row, "chClosingPrice", "CH_CLOSING_PRICE", "close")), 2),
+                    "volume":      int(float(read_value(row, "chTotTradedQty", "CH_TOT_TRADED_QTY", "volume")))
+                })
             except (KeyError, TypeError, ValueError) as row_error:
                 skipped_rows += 1
                 if skipped_rows == 1:
@@ -189,75 +295,169 @@ def fetch_price_history(symbol, days=365):
 def fetch_screener_data(symbol):
     """
     Scrapes key fundamentals from screener.in public company page.
-    NSE doesn't provide ROE, ROCE, OPM, NPM, D/E — screener does.
+
+    EV/EBITDA, P/B and D/E are NOT directly in the HTML — screener renders
+    them via JS charts. We derive them from values that ARE in the static HTML:
+
+      P/B        = Current Price / Book Value          (both in #top-ratios)
+      D/E        = Borrowings / (Equity + Reserves)    (balance-sheet table)
+      EV/EBITDA  = (Mkt Cap + Borrowings - Cash) /
+                   Operating Profit                    (top-ratios + tables)
+
+    Tries consolidated view first, falls back to standalone.
+    Never raises — returns {} on any failure.
     """
     import requests
     from bs4 import BeautifulSoup
 
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36"
-        )
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
 
-    # Try consolidated page first, then standalone
+    response = None
     for url in [
         f"https://www.screener.in/company/{symbol}/consolidated/",
         f"https://www.screener.in/company/{symbol}/",
     ]:
         try:
-            r = requests.get(url, headers=headers, timeout=10)
-
+            r = requests.get(url, headers=headers, timeout=12)
             if r.status_code == 200 and "top-ratios" in r.text:
+                response = r
                 break
+        except requests.exceptions.Timeout:
+            print(f"  Screener: timeout for {symbol}, skipping")
+            return {}
+        except Exception as exc:
+            print(f"  Screener: request error for {symbol}: {exc}")
+            return {}
 
-        except Exception:
-            continue
-    else:
-        print(f"  Screener: no page found for {symbol}")
+    if response is None:
+        print(f"  Screener: no usable page for {symbol}")
         return {}
 
-    soup = BeautifulSoup(r.text, "html.parser")
-    ratios = {}
+    soup = BeautifulSoup(response.text, "lxml" if _lxml_available else "html.parser")
 
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def to_float(val) -> float | None:
+        if val in (None, "", "—", "-", "N/A"):
+            return None
+        try:
+            return float(str(val).replace(",", "").replace("%", "").strip())
+        except (TypeError, ValueError):
+            return None
+
+    def table_rows(section_id: str) -> dict[str, list[str]]:
+        """Return {row_label: [cell_texts...]} for a named section table."""
+        sec = soup.find("section", id=section_id)
+        if not sec:
+            return {}
+        result = {}
+        for row in sec.find_all("tr"):
+            cells = row.find_all(["th", "td"])
+            if not cells:
+                continue
+            label = cells[0].get_text(strip=True)
+            vals = [c.get_text(strip=True) for c in cells[1:]]
+            result[label] = vals
+        return result
+
+    def latest(rows: dict, *keys) -> float | None:
+        """Return the most recent non-empty value for the first matching key."""
+        for key in keys:
+            vals = rows.get(key, [])
+            # walk backwards to find the last non-empty cell
+            for v in reversed(vals):
+                cleaned = v.replace(",", "").replace("%", "").strip()
+                if cleaned and cleaned not in ("—", "-"):
+                    return to_float(cleaned)
+        return None
+
+    # ── #top-ratios ──────────────────────────────────────────────────────────
+    top_raw: dict[str, float | None] = {}
     top = soup.find("ul", id="top-ratios")
     if top:
         for li in top.find_all("li"):
             name_tag = li.find("span", class_="name")
-            value_tag = li.find("span", class_="value")
+            # <span class="number"> holds the clean numeric text
+            num_tag = li.find("span", class_="number")
+            if not name_tag or not num_tag:
+                continue
+            label = name_tag.get_text(" ", strip=True).split("#")[0].strip()
+            # "High / Low" has two number spans — take the first
+            top_raw[label] = to_float(num_tag.get_text(strip=True))
 
-            if name_tag and value_tag:
-                key = name_tag.get_text(strip=True)
-                val = (
-                    value_tag.get_text(strip=True)
-                    .replace(",", "")
-                    .replace("%", "")
-                    .replace("₹", "")
-                    .strip()
-                )
-                ratios[key] = val
+    pe          = top_raw.get("Stock P/E")
+    book_value  = top_raw.get("Book Value")        # ₹ per share
+    current_price = top_raw.get("Current Price")
+    market_cap  = top_raw.get("Market Cap")        # Cr
+    roe         = top_raw.get("ROE")
+    roce        = top_raw.get("ROCE")
+    div_yield   = top_raw.get("Dividend Yield")
 
-    def to_float(val):
-        try:
-            if val in (None, "", "—", "-"):
-                return None
-            return float(val)
-        except Exception:
-            return None
+    # ── P/B — computed from top-ratios ───────────────────────────────────────
+    price_to_book: float | None = None
+    if current_price and book_value and book_value != 0:
+        price_to_book = round(current_price / book_value, 2)
 
-    return {
-        "roe": to_float(ratios.get("ROE")),
-        "roce": to_float(ratios.get("ROCE")),
-        "pe_ratio": to_float(ratios.get("Stock P/E")),
-        "dividend_yield": to_float(ratios.get("Dividend Yield")),
-        "book_value_per_share": to_float(ratios.get("Book Value")),
-        "opm": None,
-        "debt_to_equity": None,
-        "ev_ebitda": None,
-        "sales_growth": None,
-        "profit_growth": None,
+    # ── balance sheet rows ───────────────────────────────────────────────────
+    bs_rows = table_rows("balance-sheet")
+
+    borrowings     = latest(bs_rows, "Borrowings+", "Borrowings")
+    equity_capital = latest(bs_rows, "Equity Capital")
+    reserves       = latest(bs_rows, "Reserves")
+    investments    = latest(bs_rows, "Investments")   # proxy for cash/liquid
+
+    # ── D/E — computed from balance sheet ────────────────────────────────────
+    debt_to_equity: float | None = None
+    if borrowings is not None and equity_capital is not None and reserves is not None:
+        total_equity = equity_capital + reserves
+        if total_equity > 0:
+            debt_to_equity = round(borrowings / total_equity, 2)
+
+    # ── P&L rows ─────────────────────────────────────────────────────────────
+    pl_rows = table_rows("profit-loss")
+
+    operating_profit = latest(pl_rows, "Operating Profit")   # Cr
+    opm_val          = latest(pl_rows, "OPM %")
+
+    # ── EV/EBITDA — computed ─────────────────────────────────────────────────
+    # EV  = Market Cap (Cr) + Borrowings (Cr) - Cash proxy (Investments, Cr)
+    # EBITDA ≈ Operating Profit (screener's "Operating Profit" = EBIT + D&A at
+    #           this level of aggregation, which is close enough for EV/EBITDA)
+    ev_ebitda: float | None = None
+    if (market_cap is not None and borrowings is not None
+            and operating_profit is not None and operating_profit > 0):
+        cash_proxy = investments or 0
+        ev = market_cap + borrowings - cash_proxy
+        ev_ebitda = round(ev / operating_profit, 2)
+
+    # ── OPM from P&L (already parsed above) ─────────────────────────────────
+    opm: float | None = opm_val
+
+    result = {
+        "pe_ratio":             pe,
+        "price_to_book":        price_to_book,
+        "ev_ebitda":            ev_ebitda,
+        "roe":                  roe,
+        "roce":                 roce,
+        "opm":                  opm,
+        "dividend_yield":       div_yield,
+        "book_value_per_share": book_value,
+        "debt_to_equity":       debt_to_equity,
     }
+
+    found   = [k for k, v in result.items() if v is not None]
+    missing = [k for k, v in result.items() if v is None]
+    print(f"  Screener {symbol}: got {found}" + (f" | missing {missing}" if missing else ""))
+
+    return result
 
 
 def upsert_stock(data):

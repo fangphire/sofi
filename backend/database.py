@@ -139,6 +139,9 @@ def init_db():
             UNIQUE(ticker, fiscal_year)
         )
     """)
+    
+    # clean up any bad history rows with empty dates
+    cursor.execute("DELETE FROM price_history WHERE date = '' OR date IS NULL")
 
     conn.commit()
     conn.close()
